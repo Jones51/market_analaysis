@@ -1,0 +1,21 @@
+# Credenciais - nunca versionar
+.env
+
+# Dados gerados (artefatos de execução)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
