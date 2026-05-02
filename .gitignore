@@ -4,6 +4,9 @@
 # Dados gerados (artefatos de execução)
 data/
 
+# Documentação interna
+analise_apis_pipeline_mercado.md
+
 # Python
 __pycache__/
 *.pyc
