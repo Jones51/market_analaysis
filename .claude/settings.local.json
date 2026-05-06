@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\link_\\\\Desktop\\\\Estudos\\\\Petro- Analise Mercado\\\\petro-local\" -Recurse)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\link_\\\\Desktop\\\\Estudos\\\\Petro- Analise Mercado\\\\petro-local\" -Force)",
+      "WebSearch"
+    ]
+  }
+}
