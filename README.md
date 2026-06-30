@@ -20,7 +20,7 @@ A implementação segue o ciclo de vida da extração de dados, abrangendo as se
 ## 📊 Habilidades
 - **Linguagens & Ambientes:** Python (scripting, CLI com argparse, variáveis de ambiente)
 
-- **Engenharia de Dados:** Extração via API (yfinance, fredapi, requests), Data Wrangling com Pandas, normalização em formato longo, tratamento de erros com retry e backoff exponencial
+- **Engenharia de Dados:** Extração via API (yfinance, FRED HTTP API, requests), Data Wrangling com Pandas, normalização em formato longo, tratamento de erros com retry e backoff exponencial
 
 - **Fontes de Dados:** Yahoo Finance, FRED (Federal Reserve), BCB SGS (Banco Central do Brasil)
 

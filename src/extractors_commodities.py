@@ -8,7 +8,9 @@ import pandas as pd
 import requests
 
 from extractors import _empty_failures_frame, _empty_series_frame, _normalize_output
-from series_catalog_commodities import NAPHTHA_BBL_PER_MT
+
+
+NAPHTHA_BBL_PER_MT: float = 8.9
 
 
 def fetch_eia_series(

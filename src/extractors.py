@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from io import StringIO
+from pathlib import Path
 import time
 from typing import Dict
 
 import pandas as pd
 import requests
 import yfinance as yf
-from fredapi import Fred
+
+
+_YFINANCE_CACHE_CONFIGURED = False
 
 
 def _empty_series_frame() -> pd.DataFrame:
@@ -40,9 +43,27 @@ def _normalize_output(
     return base[["date", "marker", value_col, "source"]]
 
 
+def _configure_yfinance_cache() -> None:
+    global _YFINANCE_CACHE_CONFIGURED
+    if _YFINANCE_CACHE_CONFIGURED:
+        return
+
+    cache_dir = Path(__file__).resolve().parents[1] / ".tmp" / "yfinance_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if hasattr(yf, "cache") and hasattr(yf.cache, "set_cache_location"):
+        yf.cache.set_cache_location(str(cache_dir))
+    elif hasattr(yf, "set_tz_cache_location"):
+        yf.set_tz_cache_location(str(cache_dir))
+
+    _YFINANCE_CACHE_CONFIGURED = True
+
+
 def fetch_yfinance_series(
     catalog: Dict[str, str], start_date: str, end_date: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _configure_yfinance_cache()
+
     all_rows = []
     failures = []
     for marker, ticker in catalog.items():
@@ -126,30 +147,44 @@ def fetch_yfinance_series(
 def fetch_fred_series(
     catalog: Dict[str, str], start_date: str, end_date: str, fred_api_key: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    fred = Fred(api_key=fred_api_key)
     all_rows = []
     failures = []
-
-    start = datetime.fromisoformat(start_date)
-    end = datetime.fromisoformat(end_date)
+    base_url = "https://api.stlouisfed.org/fred/series/observations"
 
     for marker, series_id in catalog.items():
-        series = None
+        frame = None
         last_error = ""
+        params = {
+            "series_id": series_id,
+            "api_key": fred_api_key,
+            "file_type": "json",
+            "observation_start": start_date,
+            "observation_end": end_date,
+        }
+
         for attempt in range(3):
             try:
-                series = fred.get_series(
-                    series_id, observation_start=start, observation_end=end
-                )
+                response = requests.get(base_url, params=params, timeout=60)
+                response.raise_for_status()
+                payload = response.json()
+                if "error_code" in payload:
+                    raise RuntimeError(
+                        f"{payload.get('error_code')}: {payload.get('error_message')}"
+                    )
+
+                observations = payload.get("observations", [])
+                if not observations:
+                    last_error = "no_observations"
+                frame = pd.DataFrame(observations)
                 break
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < 2:
                     time.sleep(1.5 * (attempt + 1))
                 else:
-                    series = None
+                    frame = None
 
-        if series is None or series.empty:
+        if frame is None or frame.empty:
             failures.append(
                 {
                     "marker": marker,
@@ -160,10 +195,10 @@ def fetch_fred_series(
             )
             continue
 
-        frame = series.reset_index()
-        frame.columns = ["date", "value"]
+        frame = frame[["date", "value"]].copy()
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
-        frame = frame.dropna(subset=["value"])
+        frame = frame.dropna(subset=["date", "value"])
         if frame.empty:
             failures.append(
                 {

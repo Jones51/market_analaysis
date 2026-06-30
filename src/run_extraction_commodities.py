@@ -1,49 +1,29 @@
 from __future__ import annotations
 
 import argparse
-import os
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
 
-from extractors import fetch_fred_series, fetch_yfinance_series
-from extractors_commodities import (
-    build_derived_naphtha_crack_spread,
-    fetch_eia_series,
-)
+from extractors import fetch_yfinance_series
 from series_catalog_commodities import (
-    EIA_COMMODITIES_SERIES,
-    FRED_COMMODITIES_SERIES,
-    PENDING_COMMODITIES_V2,
     YFINANCE_COMMODITIES_SERIES,
+    YFINANCE_COMMODITIES_START_DATES,
 )
+
+
+SERIES_COLUMNS = ["date", "marker", "value", "source"]
+FAILURE_COLUMNS = ["marker", "source", "status", "detail"]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Pipeline de extração de commodities industriais (Grupo 2): "
-            "metais LME, minério de ferro, carvão, zinco, naphtha crack spread."
-        )
+        description="Extracao de commodities via yfinance."
     )
     parser.add_argument("--start-date", default="2013-01-01")
     parser.add_argument("--end-date", default=date.today().isoformat())
     parser.add_argument("--output-dir", default="data")
-    parser.add_argument(
-        "--fred-api-key",
-        default=os.getenv("FRED_API_KEY", ""),
-        help="Obrigatório. Defina FRED_API_KEY ou passe --fred-api-key.",
-    )
-    parser.add_argument(
-        "--eia-api-key",
-        default=os.getenv("EIA_API_KEY", ""),
-        help=(
-            "Opcional. Habilita extração de nafta e cálculo do Naphtha Crack Spread. "
-            "Chave gratuita em https://www.eia.gov/opendata/"
-        ),
-    )
     return parser.parse_args()
 
 
@@ -52,99 +32,114 @@ def ensure_dirs(base_dir: Path) -> None:
     (base_dir / "curated").mkdir(parents=True, exist_ok=True)
 
 
-def save_raw(df: pd.DataFrame, path: Path) -> None:
+def save_series(df: pd.DataFrame, path: Path) -> None:
     if df.empty:
-        pd.DataFrame(columns=["date", "marker", "value", "source"]).to_csv(path, index=False)
+        pd.DataFrame(columns=SERIES_COLUMNS).to_csv(path, index=False)
         return
+
     out = df.copy()
     out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
     out.to_csv(path, index=False)
 
 
+def build_curated(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=SERIES_COLUMNS)
+
+    curated = df.copy()
+    curated["date"] = pd.to_datetime(curated["date"])
+    curated = curated.sort_values(["marker", "date"]).reset_index(drop=True)
+    return curated
+
+
+def apply_marker_start_date(marker: str, requested_start_date: str) -> str:
+    marker_start_date = YFINANCE_COMMODITIES_START_DATES.get(marker)
+    if marker_start_date is None:
+        return requested_start_date
+
+    requested_start = datetime.fromisoformat(requested_start_date).date()
+    marker_start = datetime.fromisoformat(marker_start_date).date()
+    return max(requested_start, marker_start).isoformat()
+
+
+def fetch_commodity_yfinance_series(
+    start_date: str, end_date: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_rows = []
+    all_failures = []
+    end_dt = datetime.fromisoformat(end_date).date()
+
+    for marker, ticker in YFINANCE_COMMODITIES_SERIES.items():
+        effective_start_date = apply_marker_start_date(marker, start_date)
+        effective_start_dt = datetime.fromisoformat(effective_start_date).date()
+
+        if effective_start_dt > end_dt:
+            available_from = YFINANCE_COMMODITIES_START_DATES.get(
+                marker, effective_start_date
+            )
+            all_failures.append(
+                pd.DataFrame(
+                    [
+                        {
+                            "marker": marker,
+                            "source": "yfinance",
+                            "status": "no_data_in_requested_range",
+                            "detail": (
+                                f"ticker={ticker}; "
+                                f"available_from={available_from}"
+                            ),
+                        }
+                    ]
+                )
+            )
+            continue
+
+        data, failures = fetch_yfinance_series(
+            catalog={marker: ticker},
+            start_date=effective_start_date,
+            end_date=end_date,
+        )
+
+        if not data.empty:
+            all_rows.append(data)
+        if not failures.empty:
+            all_failures.append(failures)
+
+    data_df = (
+        pd.concat(all_rows, ignore_index=True)
+        if all_rows
+        else pd.DataFrame(columns=SERIES_COLUMNS)
+    )
+    failures_df = (
+        pd.concat(all_failures, ignore_index=True)
+        if all_failures
+        else pd.DataFrame(columns=FAILURE_COLUMNS)
+    )
+    return data_df, failures_df
+
+
 def main() -> None:
-    load_dotenv()
     args = parse_args()
     output_dir = Path(args.output_dir)
     ensure_dirs(output_dir)
 
-    if not args.fred_api_key:
-        raise ValueError(
-            "FRED API key ausente. Defina FRED_API_KEY ou passe --fred-api-key."
-        )
-
-    # --- Yahoo Finance (diário) -----------------------------------------------
-    yf_df, yf_failures = fetch_yfinance_series(
-        catalog=YFINANCE_COMMODITIES_SERIES,
+    yf_df, yf_failures = fetch_commodity_yfinance_series(
         start_date=args.start_date,
         end_date=args.end_date,
     )
-    save_raw(yf_df, output_dir / "raw" / "yfinance_commodities.csv")
 
-    # --- FRED mensal (IMF Primary Commodity Prices) ---------------------------
-    fred_df, fred_failures = fetch_fred_series(
-        catalog=FRED_COMMODITIES_SERIES,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        fred_api_key=args.fred_api_key,
-    )
-    save_raw(fred_df, output_dir / "raw" / "fred_commodities.csv")
+    save_series(yf_df, output_dir / "raw" / "yfinance_commodities.csv")
 
-    # --- EIA (nafta, opcional) ------------------------------------------------
-    eia_df = pd.DataFrame(columns=["date", "marker", "value", "source"])
-    eia_failures = pd.DataFrame(columns=["marker", "source", "status", "detail"])
-    if args.eia_api_key:
-        eia_df, eia_failures = fetch_eia_series(
-            catalog=EIA_COMMODITIES_SERIES,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            eia_api_key=args.eia_api_key,
-        )
-        save_raw(eia_df, output_dir / "raw" / "eia_commodities.csv")
-    else:
-        print("[INFO] EIA_API_KEY não fornecida — Naphtha Crack Spread será omitido.")
+    curated = build_curated(yf_df)
+    save_series(curated, output_dir / "curated" / "commodity_indicators.csv")
 
-    # --- Derivado: Naphtha Crack Spread ---------------------------------------
-    # Carrega Brent do pipeline v1 se disponível para calcular o spread.
-    naphtha_spread = pd.DataFrame(columns=["date", "marker", "value", "source"])
-    brent_path = output_dir / "raw" / "yfinance.csv"
-    if not eia_df.empty and brent_path.exists():
-        existing_yf = pd.read_csv(brent_path)
-        naphtha_spread = build_derived_naphtha_crack_spread(
-            pd.concat([existing_yf, eia_df], ignore_index=True)
-        )
+    yf_failures.to_csv(output_dir / "curated" / "failed_commodities.csv", index=False)
 
-    # --- Consolidação e curadoria ---------------------------------------------
-    combined = pd.concat([yf_df, fred_df, eia_df, naphtha_spread], ignore_index=True)
-    if not combined.empty:
-        combined["date"] = pd.to_datetime(combined["date"])
-        combined = combined.sort_values(["marker", "date"]).reset_index(drop=True)
-        combined["date"] = combined["date"].dt.strftime("%Y-%m-%d")
-
-    combined.to_csv(output_dir / "curated" / "commodity_indicators.csv", index=False)
-
-    # --- Relatório de pendências ----------------------------------------------
-    pd.DataFrame(
-        {
-            "marker": PENDING_COMMODITIES_V2,
-            "status": "no_free_api_available",
-        }
-    ).to_csv(output_dir / "curated" / "pending_commodities_v2.csv", index=False)
-
-    # --- Relatório de falhas --------------------------------------------------
-    all_failures = pd.concat(
-        [yf_failures, fred_failures, eia_failures], ignore_index=True
-    )
-    all_failures.to_csv(output_dir / "curated" / "failed_commodities.csv", index=False)
-
-    n_markers = combined["marker"].nunique() if not combined.empty else 0
-    n_rows = len(combined)
-    print(f"[OK] {n_rows} linhas extraídas para {n_markers} marcadores.")
-    print(
-        f"[INFO] {len(PENDING_COMMODITIES_V2)} marcadores sem API gratuita: "
-        + ", ".join(PENDING_COMMODITIES_V2)
-    )
-    if not all_failures.empty:
-        print(f"[WARN] {len(all_failures)} falha(s) — ver failed_commodities.csv")
+    n_markers = curated["marker"].nunique() if not curated.empty else 0
+    n_rows = len(curated)
+    print(f"[OK] {n_rows} linhas extraidas para {n_markers} marcadores.")
+    if not yf_failures.empty:
+        print(f"[WARN] {len(yf_failures)} falha(s) - ver failed_commodities.csv")
 
 
 if __name__ == "__main__":
